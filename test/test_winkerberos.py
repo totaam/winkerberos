@@ -17,11 +17,7 @@ import base64
 import mmap
 import os
 import sys
-
-if sys.version_info[:2] == (2, 6):
-    import unittest2 as unittest
-else:
-    import unittest
+import unittest
 
 sys.path[0:0] = [""]
 
@@ -159,7 +155,7 @@ class TestWinKerberos(unittest.TestCase):
            payload=custom)
         self.assertTrue(response['done'])
 
-        self.assertIsInstance(kerberos.authGSSClientUsername(ctx), str)
+        self.assertIsInstance(kerberos.authGSSClientUserName(ctx), str)
 
     def test_uninitialized_context(self):
         res, ctx = kerberos.authGSSClientInit(
@@ -172,7 +168,7 @@ class TestWinKerberos(unittest.TestCase):
         self.assertEqual(res, kerberos.AUTH_GSS_COMPLETE)
 
         self.assertIsNone(kerberos.authGSSClientResponse(ctx))
-        self.assertIsNone(kerberos.authGSSClientUsername(ctx))
+        self.assertIsNone(kerberos.authGSSClientUserName(ctx))
         self.assertRaises(
             kerberos.GSSError, kerberos.authGSSClientUnwrap, ctx, "foobar")
         self.assertRaises(
@@ -251,14 +247,12 @@ class TestWinKerberos(unittest.TestCase):
         try:
             self.authenticate(password=password)
         except kerberos.GSSError as exc:
-            self.fail("Failed bytearray: %s" % (str(exc),))
+            self.fail("Failed bytearray: {}".format(str(exc)))
 
-        # memoryview doesn't exist in python 2.6
-        if sys.version_info[:2] >= (2, 7):
-            try:
-                self.authenticate(password=memoryview(password))
-            except kerberos.GSSError as exc:
-                self.fail("Failed memoryview: %s" % (str(exc),))
+        try:
+            self.authenticate(password=memoryview(password))
+        except kerberos.GSSError as exc:
+            self.fail("Failed memoryview: {}".format(str(exc)))
 
         # mmap.mmap and array.array only expose the
         # buffer interface in python 3.x
@@ -269,7 +263,7 @@ class TestWinKerberos(unittest.TestCase):
             try:
                 self.authenticate(password=mm)
             except kerberos.GSSError as exc:
-                self.fail("Failed map.map: %s" % (str(exc),))
+                self.fail("Failed map.map: {}".format(str(exc)))
 
             # Note that only ascii and utf8 strings are supported, so
             # 'u' with a unicode object won't work. Unicode objects
@@ -277,7 +271,7 @@ class TestWinKerberos(unittest.TestCase):
             try:
                 self.authenticate(password=array.array('b', password))
             except kerberos.GSSError as exc:
-                self.fail("Failed array.array: %s" % (str(exc),))
+                self.fail("Failed array.array: {}".format(str(exc)))
 
     def test_principal(self):
         if _PRINCIPAL is None:
@@ -286,7 +280,7 @@ class TestWinKerberos(unittest.TestCase):
             self.authenticate(
                 principal=_PRINCIPAL, user=None, domain=None, password=None)
         except kerberos.GSSError as exc:
-            self.fail("Failed testing principal: %s" % (str(exc),))
+            self.fail("Failed testing principal: {}".format(str(exc)))
 
         encoded = bytearray(_PRINCIPAL, "utf8")
         # No error.

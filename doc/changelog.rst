@@ -1,6 +1,21 @@
 Changelog
 =========
 
+Changes in Version 0.8.0
+------------------------
+
+- WinKerberos now builds under MSYS2 using mingw-w64. Note
+  that you can't use this support to build with python.org
+  provided Pythons and mingw-w64. See `<https://bugs.python.org/issue25251>`_
+  for a related discussion. Thanks go to Antoine Martin for the patch.
+- Experimental server side API. Thanks go to Kacper Bostrom for the patch.
+
+*Backward Breaking Changes*
+
+- `authGSSClientUsername` has been renamed
+  :func:`winkerberos.authGSSClientUserName` to match ccs-pykerberos.
+- WinKerberos no longer supports Python 2.6 or Python 3.3.
+
 Changes in Version 0.7.0
 ------------------------
 

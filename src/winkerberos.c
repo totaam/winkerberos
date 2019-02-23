@@ -21,17 +21,15 @@
 #if PY_MAJOR_VERSION >= 3
 #define PyInt_FromLong PyLong_FromLong
 #define PyString_FromString PyUnicode_FromString
-#endif
-
-#if PY_VERSION_HEX >= 0x03020000
-#define PyCObject_Check PyCapsule_CheckExact
-#define PyCObject_FromVoidPtr(cobj, destr) PyCapsule_New(cobj, NULL, destr)
-#define PyCObject_AsVoidPtr(self) PyCapsule_GetPointer(self, NULL)
-#endif
-
-#if PY_VERSION_HEX < 0x03030000
+#else
 #define PyUnicode_GET_LENGTH PyUnicode_GET_SIZE
 #endif
+
+#define MECH_OID_KRB5_CAPSULE_NAME "winkerberos.GSS_MECH_OID_KRB5"
+#define MECH_OID_SPNEGO_CAPSULE_NAME "winkerberos.GSS_MECH_OID_SPNEGO"
+#define CLIENT_CTX_CAPSULE_NAME "GSSAPIClientContext"
+#define SERVER_CTX_CAPSULE_NAME "GSSAPIServerContext"
+#define CHANNEL_BINDINGS_CTX_CAPSULE_NAME "GSSAPIChannelBindingsContext"
 
 PyDoc_STRVAR(winkerberos_documentation,
 "A native Kerberos SSPI client implementation.\n"
@@ -184,15 +182,19 @@ StringObject_AsWCHAR(PyObject* arg,
 }
 
 static VOID
-#if PY_MAJOR_VERSION >=3
 destroy_sspi_client(PyObject* obj) {
-    sspi_client_state* state = PyCapsule_GetPointer(obj, NULL);
-#else
-destroy_sspi_client(VOID* obj) {
-    sspi_client_state* state = (sspi_client_state*)obj;
-#endif
+    sspi_client_state* state = PyCapsule_GetPointer(obj, PyCapsule_GetName(obj));
     if (state) {
         destroy_sspi_client_state(state);
+        free(state);
+    }
+}
+
+static VOID
+destroy_sspi_server(PyObject* obj) {
+    sspi_server_state* state = PyCapsule_GetPointer(obj, PyCapsule_GetName(obj));
+    if (state) {
+        destroy_sspi_server_state(state);
         free(state);
     }
 }
@@ -367,11 +369,12 @@ sspi_client_init(PyObject* self, PyObject* args, PyObject* kw) {
     }
 
     if (mechoidobj != Py_None) {
-        if (!PyCObject_Check(mechoidobj)) {
+        if (!PyCapsule_CheckExact(mechoidobj)) {
             PyErr_SetString(PyExc_TypeError, "Invalid type for mech_oid");
             goto done;
         }
-        mechoid = (WCHAR*)PyCObject_AsVoidPtr(mechoidobj);
+        /* TODO: check that PyCapsule_GetName returns one of the two valid names. */
+        mechoid = (WCHAR*)PyCapsule_GetPointer(mechoidobj, PyCapsule_GetName(mechoidobj));
         if (mechoid == NULL) {
             PyErr_SetString(PyExc_TypeError, "Invalid value for mech_oid");
             goto done;
@@ -383,7 +386,8 @@ sspi_client_init(PyObject* self, PyObject* args, PyObject* kw) {
         goto memoryerror;
     }
 
-    pyctx = PyCObject_FromVoidPtr(state, &destroy_sspi_client);
+    pyctx = PyCapsule_New(
+        state, CLIENT_CTX_CAPSULE_NAME, &destroy_sspi_client);
     if (pyctx == NULL) {
         free(state);
         goto done;
@@ -419,12 +423,76 @@ done:
     return resultobj;
 }
 
+PyDoc_STRVAR(sspi_server_init_doc,
+"authGSSServerInit(service)\n"
+"\n"
+"Initializes a context for Kerberos SSPI server side authentication with\n"
+"the given service principal.\n"
+"\n"
+":Parameters:\n"
+"  - `service`: A string containing the service principal in RFC-2078 format\n"
+"    (``service@hostname``) or SPN format (``service/hostname`` or\n"
+"    ``service/hostname@REALM``).\n"
+"\n"
+":Returns: A tuple of (result, context) where result is\n"
+"          :data:`AUTH_GSS_COMPLETE` and context is an opaque value passed\n"
+"          in subsequent function calls.\n"
+"\n"
+".. versionadded:: 0.8.0");
+
+static PyObject*
+sspi_server_init(PyObject* self, PyObject* args) {
+    sspi_server_state* state;
+    PyObject* pyctx = NULL;
+    PyObject* serviceobj;
+    WCHAR *service = NULL;
+    Py_ssize_t slen = 0;
+    PyObject* resultobj = NULL;
+    INT result = 0;
+
+    if (!PyArg_ParseTuple(args, "O", &serviceobj)) {
+        return NULL;
+    }
+
+    if (!StringObject_AsWCHAR(serviceobj, 1, FALSE, &service, &slen)) {
+        goto done;
+    }
+
+    state = (sspi_server_state*)malloc(sizeof(sspi_server_state));
+    if (state == NULL) {
+        goto memoryerror;
+    }
+
+    pyctx = PyCapsule_New(
+        state, SERVER_CTX_CAPSULE_NAME, &destroy_sspi_server);
+    if (pyctx == NULL) {
+        free(state);
+        goto done;
+    }
+
+    result = auth_sspi_server_init(service, state);
+    if (result == AUTH_GSS_ERROR) {
+        Py_DECREF(pyctx);
+        goto done;
+    }
+
+    resultobj = Py_BuildValue("(iN)", result, pyctx);
+    goto done;
+
+memoryerror:
+    PyErr_SetNone(PyExc_MemoryError);
+
+done:
+    free(service);
+    return resultobj;
+}
+
 PyDoc_STRVAR(sspi_client_clean_doc,
 "authGSSClientClean(context)\n"
 "\n"
-"Destroys the context. This function is provided for API compatibility with\n"
-"pykerberos but does nothing. The context object destroys itself when it\n"
-"is reclaimed.\n"
+"Destroys the client context. This function is provided for API\n"
+"compatibility with pykerberos but does nothing. The context object\n"
+"destroys itself when it is reclaimed.\n"
 "\n"
 ":Parameters:\n"
 "  - `context`: The context object returned by :func:`authGSSClientInit`.\n"
@@ -437,13 +505,28 @@ sspi_client_clean(PyObject* self, PyObject* args) {
     return Py_BuildValue("i", AUTH_GSS_COMPLETE);
 }
 
-#if PY_MAJOR_VERSION >= 3
+PyDoc_STRVAR(sspi_server_clean_doc,
+"authGSSServerClean(context)\n"
+"\n"
+"Destroys the server context. This function is provided for API\n"
+"compatibility with pykerberos but does nothing. The context object\n"
+"destroys itself when it is reclaimed.\n"
+"\n"
+":Parameters:\n"
+"  - `context`: The context object returned by :func:`authGSSServerInit`.\n"
+"\n"
+":Returns: :data:`AUTH_GSS_COMPLETE`\n"
+"\n"
+".. versionadded:: 0.8.0");
+
+static PyObject*
+sspi_server_clean(PyObject* self, PyObject* args) {
+    /* Do nothing. For compatibility with pykerberos only. */
+    return Py_BuildValue("i", AUTH_GSS_COMPLETE);
+}
+
 void destruct_channel_bindings_struct(PyObject* o) {
-    SecPkgContext_Bindings* context_bindings = PyCapsule_GetPointer(o, NULL);
-#else
-void destruct_channel_bindings_struct(void* o) {
-    SecPkgContext_Bindings* context_bindings = (SecPkgContext_Bindings *)o;
-#endif
+    SecPkgContext_Bindings* context_bindings = PyCapsule_GetPointer(o, PyCapsule_GetName(o));
     if (context_bindings != NULL) {
         free(context_bindings->Bindings);
         free(context_bindings);
@@ -507,7 +590,10 @@ PyDoc_STRVAR(sspi_channel_bindings_doc,
 "    {cert-hash} is the hash of the server's certificate.\n"
 "\n"
 ":Returns: An opaque value to be passed to the ``channel_bindings`` parameter of\n"
-"    :func:`authGSSClientStep`");
+"    :func:`authGSSClientStep`\n"
+"\n"
+".. versionadded:: 0.7.0");
+
 static PyObject*
 sspi_channel_bindings(PyObject* self, PyObject* args, PyObject* keywds) {
     static char* kwlist[] = {"initiator_addrtype", "initiator_address", "acceptor_addrtype",
@@ -594,7 +680,8 @@ sspi_channel_bindings(PyObject* self, PyObject* args, PyObject* keywds) {
         channel_bindings->dwApplicationDataOffset = 0;
     }
 
-    pychan_bindings = PyCObject_FromVoidPtr(context_bindings, &destruct_channel_bindings_struct);
+    pychan_bindings = PyCapsule_New(
+        context_bindings, CHANNEL_BINDINGS_CTX_CAPSULE_NAME, &destruct_channel_bindings_struct);
     if (pychan_bindings == NULL) {
         free(channel_bindings);
         free(context_bindings);
@@ -638,28 +725,77 @@ sspi_client_step(PyObject* self, PyObject* args, PyObject* keywds) {
         return NULL;
     }
 
-    if (!PyCObject_Check(pyctx)) {
+    if (!PyCapsule_CheckExact(pyctx)) {
         PyErr_SetString(PyExc_TypeError, "Expected a context object");
         return NULL;
     }
 
-    state = (sspi_client_state*)PyCObject_AsVoidPtr(pyctx);
+    state = (sspi_client_state*)PyCapsule_GetPointer(
+        pyctx, CLIENT_CTX_CAPSULE_NAME);
     if (state == NULL) {
         return NULL;
     }
 
     if (pychan_bindings != NULL) {
-        if (!PyCObject_Check(pychan_bindings)) {
+        if (!PyCapsule_CheckExact(pychan_bindings)) {
             PyErr_SetString(PyExc_TypeError, "Expected a channel bindings object");
             return NULL;
         }
-        sec_pkg_context_bindings = (SecPkgContext_Bindings *)PyCObject_AsVoidPtr(pychan_bindings);
+        sec_pkg_context_bindings = (SecPkgContext_Bindings *)PyCapsule_GetPointer(
+            pychan_bindings, CHANNEL_BINDINGS_CTX_CAPSULE_NAME);
         if (sec_pkg_context_bindings == NULL) {
             return NULL;
         }
     }
 
     result = auth_sspi_client_step(state, challenge, sec_pkg_context_bindings);
+    if (result == AUTH_GSS_ERROR) {
+        return NULL;
+    }
+
+    return Py_BuildValue("i", result);
+}
+
+PyDoc_STRVAR(sspi_server_step_doc,
+"authGSSServerStep(context, challenge)\n"
+"\n"
+"Executes a single Kerberos SSPI server step using the supplied client data.\n"
+"\n"
+":Parameters:\n"
+"  - `context`: The context object returned by :func:`authGSSServerInit`.\n"
+"  - `challenge`: A string containing the base64 encoded client data.\n"
+"\n"
+":Returns: :data:`AUTH_GSS_CONTINUE` or :data:`AUTH_GSS_COMPLETE`\n"
+"\n"
+".. versionadded:: 0.8.0");
+
+static PyObject*
+sspi_server_step(PyObject* self, PyObject* args) {
+    sspi_server_state* state;
+    PyObject* pyctx;
+    SEC_CHAR* challenge = NULL;
+    INT result = 0;
+
+    if (!PyArg_ParseTuple(args, "Os", &pyctx, &challenge)) {
+        return NULL;
+    }
+
+    if (_string_too_long("challenge", strlen(challenge))) {
+        return NULL;
+    }
+
+    if (!PyCapsule_CheckExact(pyctx)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a context object");
+        return NULL;
+    }
+
+    state = (sspi_server_state*)PyCapsule_GetPointer(
+        pyctx, SERVER_CTX_CAPSULE_NAME);
+    if (state == NULL) {
+        return NULL;
+    }
+
+    result = auth_sspi_server_step(state, challenge);
     if (result == AUTH_GSS_ERROR) {
         return NULL;
     }
@@ -686,12 +822,48 @@ sspi_client_response(PyObject* self, PyObject* args) {
         return NULL;
     }
 
-    if (!PyCObject_Check(pyctx)) {
+    if (!PyCapsule_CheckExact(pyctx)) {
         PyErr_SetString(PyExc_TypeError, "Expected a context object");
         return NULL;
     }
 
-    state = (sspi_client_state*)PyCObject_AsVoidPtr(pyctx);
+    state = (sspi_client_state*)PyCapsule_GetPointer(
+        pyctx, CLIENT_CTX_CAPSULE_NAME);
+    if (state == NULL) {
+        return NULL;
+    }
+
+    return Py_BuildValue("s", state->response);
+}
+
+PyDoc_STRVAR(sspi_server_response_doc,
+"authGSSServerResponse(context)\n"
+"\n"
+"Get the response to the last successful server operation.\n"
+"\n"
+":Parameters:\n"
+"  - `context`: The context object returned by :func:`authGSSServerInit`.\n"
+"\n"
+":Returns: A base64 encoded string to be sent to the client.\n"
+"\n"
+".. versionadded:: 0.8.0");
+
+static PyObject*
+sspi_server_response(PyObject* self, PyObject* args) {
+    sspi_server_state* state;
+    PyObject* pyctx;
+
+    if (!PyArg_ParseTuple(args, "O", &pyctx)) {
+        return NULL;
+    }
+
+    if (!PyCapsule_CheckExact(pyctx)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a context object");
+        return NULL;
+    }
+
+    state = (sspi_server_state*)PyCapsule_GetPointer(
+        pyctx, SERVER_CTX_CAPSULE_NAME);
     if (state == NULL) {
         return NULL;
     }
@@ -722,12 +894,13 @@ sspi_client_response_conf(PyObject* self, PyObject* args) {
         return NULL;
     }
 
-    if (!PyCObject_Check(pyctx)) {
+    if (!PyCapsule_CheckExact(pyctx)) {
         PyErr_SetString(PyExc_TypeError, "Expected a context object");
         return NULL;
     }
 
-    state = (sspi_client_state*)PyCObject_AsVoidPtr(pyctx);
+    state = (sspi_client_state*)PyCapsule_GetPointer(
+        pyctx, CLIENT_CTX_CAPSULE_NAME);
     if (state == NULL) {
         return NULL;
     }
@@ -736,7 +909,7 @@ sspi_client_response_conf(PyObject* self, PyObject* args) {
 }
 
 PyDoc_STRVAR(sspi_client_username_doc,
-"authGSSClientUsername(context)\n"
+"authGSSClientUserName(context)\n"
 "\n"
 "Get the user name of the authenticated principal. Will only succeed after\n"
 "authentication is complete.\n"
@@ -755,12 +928,50 @@ sspi_client_username(PyObject* self, PyObject* args) {
         return NULL;
     }
 
-    if (!PyCObject_Check(pyctx)) {
+    if (!PyCapsule_CheckExact(pyctx)) {
         PyErr_SetString(PyExc_TypeError, "Expected a context object");
         return NULL;
     }
 
-    state = (sspi_client_state*)PyCObject_AsVoidPtr(pyctx);
+    state = (sspi_client_state*)PyCapsule_GetPointer(
+        pyctx, CLIENT_CTX_CAPSULE_NAME);
+    if (state == NULL) {
+        return NULL;
+    }
+
+    return Py_BuildValue("s", state->username);
+}
+
+PyDoc_STRVAR(sspi_server_username_doc,
+"authGSSServerUserName(context)\n"
+"\n"
+"Get the user name of the primcipal trying to authenticate to the server.\n"
+"Will only succeed after :func:`authGSSServerStep` returns a complete or\n"
+"continue response.\n"
+"\n"
+":Parameters:\n"
+"  - `context`: The context object returned by :func:`authGSSServerInit`.\n"
+"\n"
+":Returns: A string containing the username.\n"
+"\n"
+".. versionadded:: 0.8.0");
+
+static PyObject*
+sspi_server_username(PyObject* self, PyObject* args) {
+    sspi_server_state* state;
+    PyObject* pyctx;
+
+    if (!PyArg_ParseTuple(args, "O", &pyctx)) {
+        return NULL;
+    }
+
+    if (!PyCapsule_CheckExact(pyctx)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a context object");
+        return NULL;
+    }
+
+    state = (sspi_server_state*)PyCapsule_GetPointer(
+        pyctx, SERVER_CTX_CAPSULE_NAME);
     if (state == NULL) {
         return NULL;
     }
@@ -795,12 +1006,13 @@ sspi_client_unwrap(PyObject* self, PyObject* args) {
         return NULL;
     }
 
-    if (!PyCObject_Check(pyctx)) {
+    if (!PyCapsule_CheckExact(pyctx)) {
         PyErr_SetString(PyExc_TypeError, "Expected a context object");
         return NULL;
     }
 
-    state = (sspi_client_state*)PyCObject_AsVoidPtr(pyctx);
+    state = (sspi_client_state*)PyCapsule_GetPointer(
+        pyctx, CLIENT_CTX_CAPSULE_NAME);
     if (state == NULL) {
         return NULL;
     }
@@ -857,12 +1069,13 @@ sspi_client_wrap(PyObject* self, PyObject* args) {
         return NULL;
     }
 
-    if (!PyCObject_Check(pyctx)) {
+    if (!PyCapsule_CheckExact(pyctx)) {
         PyErr_SetString(PyExc_TypeError, "Expected a context object");
         return NULL;
     }
 
-    state = (sspi_client_state*)PyCObject_AsVoidPtr(pyctx);
+    state = (sspi_client_state*)PyCapsule_GetPointer(
+        pyctx, CLIENT_CTX_CAPSULE_NAME);
     if (state == NULL) {
         return NULL;
     }
@@ -878,18 +1091,28 @@ sspi_client_wrap(PyObject* self, PyObject* args) {
 static PyMethodDef WinKerberosClientMethods[] = {
     {"authGSSClientInit", (PyCFunction)sspi_client_init,
      METH_VARARGS | METH_KEYWORDS, sspi_client_init_doc},
+    { "authGSSServerInit", sspi_server_init,
+     METH_VARARGS, sspi_server_init_doc},
     {"authGSSClientClean", sspi_client_clean,
      METH_VARARGS, sspi_client_clean_doc},
+    { "authGSSServerClean", sspi_server_clean,
+     METH_VARARGS, sspi_server_clean_doc},
     {"channelBindings", (PyCFunction)sspi_channel_bindings,
      METH_VARARGS | METH_KEYWORDS, sspi_channel_bindings_doc},
     {"authGSSClientStep", (PyCFunction)sspi_client_step,
      METH_VARARGS | METH_KEYWORDS, sspi_client_step_doc},
+    { "authGSSServerStep", sspi_server_step,
+     METH_VARARGS, sspi_server_step_doc},
     {"authGSSClientResponse", sspi_client_response,
      METH_VARARGS, sspi_client_response_doc},
+    { "authGSSServerResponse", sspi_server_response,
+     METH_VARARGS, sspi_server_response_doc},
     {"authGSSClientResponseConf", sspi_client_response_conf,
      METH_VARARGS, sspi_client_response_conf_doc},
-    {"authGSSClientUsername", sspi_client_username,
+    {"authGSSClientUserName", sspi_client_username,
      METH_VARARGS, sspi_client_username_doc},
+    { "authGSSServerUserName", sspi_server_username,
+     METH_VARARGS, sspi_server_username_doc},
     {"authGSSClientUnwrap", sspi_client_unwrap,
      METH_VARARGS, sspi_client_unwrap_doc},
     {"authGSSClientWrap", sspi_client_wrap,
@@ -984,13 +1207,13 @@ initwinkerberos(VOID)
                            PyInt_FromLong(0)) ||
         PyModule_AddObject(module,
                            "GSS_MECH_OID_KRB5",
-                           PyCObject_FromVoidPtr(GSS_MECH_OID_KRB5, NULL)) ||
+                           PyCapsule_New(GSS_MECH_OID_KRB5, MECH_OID_KRB5_CAPSULE_NAME, NULL)) ||
         PyModule_AddObject(module,
                            "GSS_MECH_OID_SPNEGO",
-                           PyCObject_FromVoidPtr(GSS_MECH_OID_SPNEGO, NULL)) ||
+                           PyCapsule_New(GSS_MECH_OID_SPNEGO, MECH_OID_SPNEGO_CAPSULE_NAME, NULL)) ||
         PyModule_AddObject(module,
                            "__version__",
-                           PyString_FromString("0.7.0"))) {
+                           PyString_FromString("0.8.0.dev0"))) {
         Py_DECREF(GSSError);
         Py_DECREF(KrbError);
         Py_DECREF(module);

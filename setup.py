@@ -15,6 +15,9 @@
 import os
 import sys
 
+if sys.version_info[:2] < (2, 7):
+    raise RuntimeError("Python version >= 2.7 required.")
+
 # http://bugs.python.org/issue15881
 try:
     import multiprocessing
@@ -76,11 +79,6 @@ with open("README.rst") as f:
         readme = ""
 
 tests_require = ["pymongo >= 2.9"]
-if sys.version_info[:2] == (2, 6):
-    tests_require.append("unittest2 >= 0.5.1")
-    test_suite = "unittest2.collector"
-else:
-    test_suite = "test"
 
 chost = os.environ.get("MINGW_CHOST") #ie: i686-w64-mingw32
 if chost:
@@ -98,7 +96,7 @@ else:
            ]
 setup(
     name="winkerberos",
-    version="0.7.0",
+    version="0.8.0.dev0",
     description="High level interface to SSPI for Kerberos client auth",
     long_description=readme,
     author="Bernie Hackett",
@@ -106,23 +104,23 @@ setup(
     url="https://github.com/mongodb-labs/winkerberos",
     keywords=["Kerberos", "SSPI", "GSSAPI"],
     install_requires=[],
-    test_suite=test_suite,
+    test_suite="test",
     tests_require=tests_require,
     platforms="Windows",
     license="Apache License, Version 2.0",
+    python_requires=">=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*",
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: Developers",
         "License :: OSI Approved :: Apache Software License",
         "Operating System :: Microsoft :: Windows",
         "Programming Language :: Python :: 2",
-        "Programming Language :: Python :: 2.6",
         "Programming Language :: Python :: 2.7",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.3",
         "Programming Language :: Python :: 3.4",
         "Programming Language :: Python :: 3.5",
         "Programming Language :: Python :: 3.6",
+        "Programming Language :: Python :: 3.7",
         "Programming Language :: Python :: Implementation :: CPython",
         "Topic :: System :: Systems Administration :: Authentication/Directory"],
     ext_modules = [
